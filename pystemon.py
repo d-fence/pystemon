@@ -146,6 +146,7 @@ class Pastie():
     def __init__(self, site, pastie_id):
         self.site = site
         self.id = pastie_id
+        self.saveFullpath = os.path.join(self.site.save_dir,self.site.pastieIdToFilename(self.id))
         self.pastie_content = None
         self.md5 = None
         self.url = self.site.download_url.format(id=self.id)
@@ -165,12 +166,11 @@ class Pastie():
     def savePastie(self, directory):
         if not self.pastie_content:
             raise SystemExit('BUG: Content not set, sannot save')
-        full_path = os.path.join(directory,self.site.pastieIdToFilename(self.id))
         if self.site.archive_compress:
-            with gzip.open(full_path, 'w') as f:
+            with gzip.open(self.saveFullpath, 'w') as f:
                 f.write(self.pastie_content.encode('utf8'))  # TODO error checking
         else:
-            with open(full_path, 'w') as f:
+            with open(self.saveFullpath, 'w') as f:
                 f.write(self.pastie_content.encode('utf8'))  # TODO error checking
 
     def fetchAndProcessPastie(self):
