@@ -147,6 +147,7 @@ class Pastie():
         self.site = site
         self.id = pastie_id
         self.saveFullpath = os.path.join(self.site.save_dir,self.site.pastieIdToFilename(self.id))
+        self.archiveFullpath = os.path.join(self.site.archive_dir,self.site.pastieIdToFilename(self.id))
         self.pastie_content = None
         self.md5 = None
         self.url = self.site.download_url.format(id=self.id)
@@ -163,14 +164,14 @@ class Pastie():
         self.pastie_content, headers = downloadUrl(self.url)
         return self.pastie_content
 
-    def savePastie(self, directory):
+    def savePastie(self, saveFullpath):
         if not self.pastie_content:
             raise SystemExit('BUG: Content not set, sannot save')
         if self.site.archive_compress:
-            with gzip.open(self.saveFullpath, 'w') as f:
+            with gzip.open(saveFullpath, 'w') as f:
                 f.write(self.pastie_content.encode('utf8'))  # TODO error checking
         else:
-            with open(self.saveFullpath, 'w') as f:
+            with open(saveFullpath, 'w') as f:
                 f.write(self.pastie_content.encode('utf8'))  # TODO error checking
 
     def fetchAndProcessPastie(self):
@@ -187,7 +188,7 @@ class Pastie():
             self.site.seenPastieAndRemember(self)
             # Save pastie to archive dir if configured
             if yamlconfig['archive']['save-all']:
-                self.savePastie(self.site.archive_dir)
+                self.savePastie(self.archiveFullpath)
             # search for data in pastie
             self.searchContent()
         return self.pastie_content
@@ -228,7 +229,7 @@ class Pastie():
         logger.info(alert)
         # Save pastie to disk if configured
         if yamlconfig['archive']['save']:
-            self.savePastie(self.site.save_dir)
+            self.savePastie(self.saveFullpath)
         # Send email alert if configured
         if yamlconfig['email']['alert']:
             self.sendEmailAlert(matches)
