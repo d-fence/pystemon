@@ -55,8 +55,8 @@ class PastieSite(threading.Thread):
         self.download_url = download_url
         self.archive_url = archive_url
         self.archive_regex = archive_regex
-        self.save_dir = yamlconfig['archive']['dir'] + os.sep + name
-        self.archive_dir = yamlconfig['archive']['dir-all'] + os.sep + name
+        self.save_dir = os.path.join(yamlconfig['archive']['dir'],name)
+        self.archive_dir = os.path.join(yamlconfig['archive']['dir-all'],name)
         if yamlconfig['archive']['save'] and not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
         if yamlconfig['archive']['save-all'] and not os.path.exists(self.archive_dir):
@@ -119,7 +119,7 @@ class PastieSite(threading.Thread):
         # look on the filesystem.  # LATER remove this filesystem lookup as it will give problems on long term
         if yamlconfig['archive']['save-all']:
             # check if the pastie was already saved on the disk
-            if os.path.exists(self.archive_dir + os.sep + self.pastieIdToFilename(pastie_id)):
+            if os.path.exists(os.path.join(self.archive_dir,self.pastieIdToFilename(pastie_id))):
                 return True
         # TODO look in the database if it was already seen
 
@@ -165,7 +165,7 @@ class Pastie():
     def savePastie(self, directory):
         if not self.pastie_content:
             raise SystemExit('BUG: Content not set, sannot save')
-        full_path = directory + os.sep + self.site.pastieIdToFilename(self.id)
+        full_path = os.path.join(directory,self.site.pastieIdToFilename(self.id))
         if self.site.archive_compress:
             with gzip.open(full_path, 'w') as f:
                 f.write(self.pastie_content.encode('utf8'))  # TODO error checking
