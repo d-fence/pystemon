@@ -3,8 +3,8 @@
 
 '''
 @author:     Christophe Vandeplas <christophe@vandeplas.com>
-@copyright:  GPLv3
-Feel free to use the code, but please share the changes you've made
+@copyright:  AGPLv3 
+             http://www.gnu.org/licenses/agpl.html
 
 To be implemented:
 - FIXME set all the config options in the class variables
@@ -17,7 +17,6 @@ To be implemented:
 import optparse
 import logging.handlers
 import sys
-import yaml
 import threading
 import Queue
 from collections import deque
@@ -34,11 +33,26 @@ import json
 import gzip
 import sqlite3
 import hashlib
-from BeautifulSoup import BeautifulSoup
 from email.MIMEMultipart import MIMEMultipart
 from email.MIMEBase import MIMEBase
 from email.MIMEText import MIMEText
 from email import Encoders
+try:
+    from BeautifulSoup import BeautifulSoup
+except:
+    exit('ERROR: Cannot import the BeautifulSoup 3 Python library. Are you sure you installed it? (apt-get install python-beautifulsoup')
+try:
+    import yaml
+except:
+    exit('ERROR: Cannot import the yaml Python library. Are you sure you installed it?')
+
+try:
+    if sys.version_info < (2, 7):
+        exit('You need python version 2.7 or newer.')
+except:
+    exit('You need python version 2.7 or newer.')
+
+
 socket.setdefaulttimeout(10)  # set a default timeout of 10 seconds to download the page (default = unlimited)
 
 
@@ -80,8 +94,8 @@ class PastieSite(threading.Thread):
                     for pastie in reversed(last_pasties):
                         queues[self.name].put(pastie)  # add pastie to queue
             # catch unknown errors
-            except:
-                logger.error("Thread for {name} crashed unexpectectly, recovering...".format(name=self.name))
+            except Exception, e:
+                logger.error("Thread for {name} crashed unexpectectly, recovering...: {e}".format(name=self.name, e=e))
             time.sleep(sleep_time)
 
     def getLastPasties(self):
@@ -125,15 +139,18 @@ class PastieSite(threading.Thread):
 
     def seenPastieAndRemember(self, pastie):
         ''' check if the pastie was already downloaded, and remember that we've seen it '''
+        seen = False
         if self.seenPastie(pastie.id):
-            return True
-        # we have not yet seen the pastie
-        # keep in memory that we've seen it
-        # appendleft for performance reasons (faster later when we iterate over the deque)
-        self.seen_pasties.appendleft(pastie.id)
+            seen = True
+        else:
+            # we have not yet seen the pastie
+            # keep in memory that we've seen it
+            # appendleft for performance reasons (faster later when we iterate over the deque)
+            self.seen_pasties.appendleft(pastie.id)
+        # add / update the pastie in the database
         if db:
             db.queue.put(pastie)
-        return False
+        return seen
 
     def pastieIdToFilename(self, pastie_id):
         filename = pastie_id.replace('/', '_')
@@ -149,6 +166,7 @@ class Pastie():
         self.saveFullpath = os.path.join(self.site.save_dir,self.site.pastieIdToFilename(self.id))
         self.archiveFullpath = os.path.join(self.site.archive_dir,self.site.pastieIdToFilename(self.id))
         self.pastie_content = None
+        self.matches = []
         self.md5 = None
         self.url = self.site.download_url.format(id=self.id)
 
@@ -157,8 +175,8 @@ class Pastie():
             try:
                 self.md5 = hashlib.md5(self.pastie_content.encode('utf-8')).hexdigest()
                 logger.debug('Pastie {site} {id} has md5: "{md5}"'.format(site=self.site.name, id=self.id, md5=self.md5))
-            except:
-                logger.debug('Pastie {id} md5 fucked up'.format(id=self.id))
+            except Exception, e:
+                logger.error('Pastie {site} {id} md5 problem: {e}'.format(site=self.site.name, id=self.id, e=e))
 
     def fetchPastie(self):
         self.pastie_content, headers = downloadUrl(self.url)
@@ -194,7 +212,6 @@ class Pastie():
         return self.pastie_content
 
     def searchContent(self):
-        matches = []
         if not self.pastie_content:
             raise SystemExit('BUG: Content not set, cannot search')
             return False
@@ -205,38 +222,60 @@ class Pastie():
             #    continue
 
             # LATER first compile regex, then search using compiled version
-            m = re.findall(regex['search'], self.pastie_content, re.IGNORECASE)
+            regex_flags = re.IGNORECASE
+            if 'regex-flags' in regex:
+                regex_flags = eval(regex['regex-flags'])
+            m = re.findall(regex['search'], self.pastie_content, regex_flags)
             if m:
+                # the regex matches the text
                 # ignore if not enough counts
-                if 'count' in regex and len(m) < regex['count']:
+                if 'count' in regex and len(m) < int(regex['count']):
                     continue
                 # ignore if exclude
-                if 'exclude' in regex and re.search(regex['exclude'], self.pastie_content, re.IGNORECASE):
+                if 'exclude' in regex and re.search(regex['exclude'], self.pastie_content, regex_flags):
                     continue
                 # we have a match, add to match list
-                matches.append(regex)
-        if matches:
-            self.actionOnMatch(matches)
+                self.matches.append(regex)
+        if self.matches:
+            self.actionOnMatch()
 
-    def actionOnMatch(self, matches):
-        descriptions = []
-        for match in matches:
-            if 'description' in match:
-                descriptions.append(match['description'])
-            else:
-                descriptions.append(match['search'])
-        alert = "Found hit for {matches} in pastie {url}".format(matches=descriptions, url=self.url)
+    def actionOnMatch(self):
+        alert = "Found hit for {matches} in pastie {url}".format(matches=self.matchesToText(), url=self.url)
         logger.info(alert)
+        # store info in DB
+        if db:
+            db.queue.put(self)
         # Save pastie to disk if configured
         if yamlconfig['archive']['save']:
             self.savePastie(self.saveFullpath)
         # Send email alert if configured
         if yamlconfig['email']['alert']:
-            self.sendEmailAlert(matches)
+            self.sendEmailAlert()
 
-    def sendEmailAlert(self, matches):
+    def matchesToText(self):
+        descriptions = []
+        for match in self.matches:
+            if 'description' in match:
+                descriptions.append(match['description'])
+            else:
+                descriptions.append(match['search'])
+        if descriptions:
+            return unicode(descriptions)
+        else:
+            return ''
+
+    def matchesToRegex(self):
+        descriptions = []
+        for match in self.matches:
+            descriptions.append(match['search'])
+        if descriptions:
+            return unicode(descriptions)
+        else:
+            return ''
+
+    def sendEmailAlert(self):
         msg = MIMEMultipart()
-        alert = "Found hit for {matches} in pastie {url}".format(matches=matches, url=self.url)
+        alert = "Found hit for {matches} in pastie {url}".format(matches=self.matchesToText(), url=self.url)
         # headers
         msg['Subject'] = yamlconfig['email']['subject'].format(subject=alert)
         msg['From'] = yamlconfig['email']['from']
@@ -247,26 +286,30 @@ I found a hit for a regular expression on one of the pastebin sites.
 
 The site where the paste came from :        {site}
 The original paste was located here:        {url}
-And the regular expression that matched:    {matches}
+And the regular expressions that matched:   {matches}
 The paste has also been attached to this email.
 
 # LATER below follows a small exerpt from the paste to give you direct context
 
-        '''.format(site=self.site.name, url=self.url, matches=matches)
+        '''.format(site=self.site.name, url=self.url, matches=self.matchesToRegex())
         msg.attach(MIMEText(message))
         # original paste as attachment
         part = MIMEBase('application', "octet-stream")
         part.set_payload(self.pastie_content)
         Encoders.encode_base64(part)
-        part.add_header('Content-Disposition', 'attachment; filename="%s"' % self.id)
+        part.add_header('Content-Disposition', 'attachment; filename="%s.txt"' % (self.id))
         msg.attach(part)
         # send out the mail
         try:
-            s = smtplib.SMTP(yamlconfig['email']['server'])
+            s = smtplib.SMTP(yamlconfig['email']['server'], yamlconfig['email']['port'])
+            if 'username' in yamlconfig['email'] and yamlconfig['email']['username']:
+                s.login(yamlconfig['email']['username'], yamlconfig['email']['password'])
             s.sendmail(yamlconfig['email']['from'], yamlconfig['email']['to'], msg.as_string())
             s.close()
-        except smtplib.SMTPException:
-            logger.error("unable to send email")
+        except smtplib.SMTPException, e:
+            logger.error("ERROR: unable to send email: {0}".format(e))
+        except Exception, e:
+            logger.error("ERROR: unable to send email. Are your email setting correct?: {e}".format(e=e))
 
 
 class PastiePasteSiteCom(Pastie):
@@ -306,13 +349,11 @@ class PastieCdvLt(Pastie):
     def fetchPastie(self):
         downloaded_page, headers = downloadUrl(self.url)
         if downloaded_page:
-            # make the json valid: strip json1(  )
-            downloaded_page = u'[' + downloaded_page[6:-2] + u']'
             # convert to json object
             json_pastie = json.loads(downloaded_page)
             if json_pastie:
                 # and extract the code
-                self.pastie_content = json_pastie[0]['code_record']
+                self.pastie_content = json_pastie['snippet']['snippetData']
         return self.pastie_content
 
 
@@ -350,7 +391,7 @@ class ThreadPasties(threading.Thread):
 
     def run(self):
         while not self.kill_received:
-            #try:
+            try:
                 # grabs pastie from queue
                 pastie = self.queue.get()
                 pastie_content = pastie.fetchAndProcessPastie()
@@ -363,8 +404,8 @@ class ThreadPasties(threading.Thread):
                 # signals to queue job is done
                 self.queue.task_done()
             # catch unknown errors
-            #except:
-            #    logger.error("ThreadPasties for {name} crashed unexpectectly, recovering...".format(name=self.name))
+            except Exception, e:
+                logger.error("ThreadPasties for {name} crashed unexpectectly, recovering...: {e}".format(name=self.name, e=e))
 
 
 def main():
@@ -381,7 +422,7 @@ def main():
         db.setDaemon(True)
         threads.append(db)
         db.start()
-
+    #test()
     # spawn a pool of threads per PastieSite, and pass them a queue instance
     for site in yamlconfig['site']:
         queues[site] = Queue.Queue()
@@ -427,8 +468,8 @@ def loadUserAgentsFromFile(filename):
     global user_agents_list
     try:
         f = open(filename)
-    except:
-        logger.error('Configuration problem: user-agent-file "{file}" not found or not readable.'.format(file=filename))
+    except Exception, e:
+        logger.error('Configuration problem: user-agent-file "{file}" not found or not readable: {e}'.format(file=filename, e=e))
     for line in f:
         line = line.strip()
         if line:
@@ -452,8 +493,8 @@ def loadProxiesFromFile(filename):
     global proxies_list
     try:
         f = open(filename)
-    except:
-        logger.error('Configuration problem: proxyfile "{file}" not found or not readable.'.format(file=filename))
+    except Exception, e:
+        logger.error('Configuration problem: proxyfile "{file}" not found or not readable: {e}'.format(file=filename, e=e))
     for line in f:
         line = line.strip()
         if line:  # LATER verify if the proxy line has the correct structure
@@ -538,9 +579,10 @@ def downloadUrl(url, data=None, cookie=None):
             failedProxy(random_proxy)
             logger.warning("Failed to download the page because of proxy error {0} trying again.".format(url))
             return downloadUrl(url)
-#    except:
-#        logger.error("ERROR: Other HTTPlib error.")
-#        return None, None
+        return None, None
+    except Exception, e:
+        logger.error("ERROR: Other HTTPlib error: {e}".format(e=e))
+        return None, None
     # do NOT try to download the url again here, as we might end in enless loop
 
 
@@ -551,14 +593,24 @@ class Sqlite3Database(threading.Thread):
         self.queue = Queue.Queue()
         self.filename = filename
         self.db_conn = None
+        self.c = None
 
     def run(self):
-        self.db_conn = sqlite3.connect(self.filename)  # TODO catch errors
+        self.db_conn = sqlite3.connect(self.filename)
         # create the db if it doesn't exist
-        c = self.db_conn.cursor()
+        self.c = self.db_conn.cursor()
         try:
             # LATER maybe create a table per site. Lookups will be faster as less text-searching is needed
-            c.execute("CREATE TABLE IF NOT EXISTS pasties (site TEXT, id TEXT, md5 TEXT, date DATE)")
+            self.c.execute('''
+                CREATE TABLE IF NOT EXISTS pasties (
+                    site TEXT,
+                    id TEXT,
+                    md5 TEXT,
+                    url TEXT,
+                    local_path TEXT,
+                    timestamp DATE,
+                    matches TEXT
+                    )''')
             self.db_conn.commit()
         except sqlite3.DatabaseError, e:
             logger.error('Problem with the SQLite database {0}: {1}'.format(self.filename, e))
@@ -569,25 +621,61 @@ class Sqlite3Database(threading.Thread):
                 # grabs pastie from queue
                 pastie = self.queue.get()
                 # add the pastie to the DB
-                self.add(pastie)
+                self.addOrUpdate(pastie)
                 # signals to queue job is done
                 self.queue.task_done()
             # catch unknown errors
-            except:
-                logger.error("Thread for SQLite crashed unexpectectly, recovering...")
+            except Exception, e:
+                logger.error("Thread for SQLite crashed unexpectectly, recovering...: {e}".format(e=e))
+
+    def addOrUpdate(self, pastie):
+        data = {'site': pastie.site.name,
+                'id': pastie.id
+                }
+        self.c.execute('SELECT count(id) FROM pasties WHERE site=:site AND id=:id', data)
+        pastie_in_db = self.c.fetchone()
+        #logger.debug('State of Database for pastie {site} {id} - {state}'.format(site=pastie.site.name, id=pastie.id, state=pastie_in_db))
+        if pastie_in_db and pastie_in_db[0]:
+            self.update(pastie)
+        else:
+            self.add(pastie)
 
     def add(self, pastie):
-        logger.debug('Added pastie {site} {id} in the SQLite database.'.format(site=pastie.site.name, id=pastie.id))
-        c = self.db_conn.cursor()
         try:
-            data = (pastie.site.name,
-                    pastie.id,
-                    pastie.md5,
-                    datetime.now())
-            c.execute('INSERT INTO pasties VALUES (?, ?, ?, ?)', data)
+            data = {'site': pastie.site.name,
+                    'id': pastie.id,
+                    'md5': pastie.md5,
+                    'url': pastie.url,
+                    'local_path': pastie.site.archive_dir + os.sep + pastie.site.pastieIdToFilename(pastie.id),
+                    'timestamp': datetime.now(),
+                    'matches': pastie.matchesToText()
+                    }
+            self.c.execute('INSERT INTO pasties VALUES (:site, :id, :md5, :url, :local_path, :timestamp, :matches)', data)
             self.db_conn.commit()
         except sqlite3.DatabaseError, e:
             logger.error('Cannot add pastie {site} {id} in the SQLite database: {error}'.format(site=pastie.site.name, id=pastie.id, error=e))
+        logger.debug('Added pastie {site} {id} in the SQLite database.'.format(site=pastie.site.name, id=pastie.id))
+
+    def update(self, pastie):
+        try:
+            data = {'site': pastie.site.name,
+                    'id': pastie.id,
+                    'md5': pastie.md5,
+                    'url': pastie.url,
+                    'local_path': pastie.site.archive_dir + os.sep + pastie.site.pastieIdToFilename(pastie.id),
+                    'timestamp': datetime.now(),
+                    'matches': pastie.matchesToText()
+                    }
+            self.c.execute('''UPDATE pasties SET md5 = :md5,
+                                            url = :url,
+                                            local_path = :local_path,
+                                            timestamp  = :timestamp,
+                                            matches = :matches
+                     WHERE site = :site AND id = :id''', data)
+            self.db_conn.commit()
+        except sqlite3.DatabaseError, e:
+            logger.error('Cannot add pastie {site} {id} in the SQLite database: {error}'.format(site=pastie.site.name, id=pastie.id, error=e))
+        logger.debug('Updated pastie {site} {id} in the SQLite database.'.format(site=pastie.site.name, id=pastie.id))
 
 
 def parseConfigFile(configfile):
@@ -643,18 +731,5 @@ if __name__ == "__main__":
         # FIXME run application in background
 
     parseConfigFile(options.config)
-    print yamlconfig['search']
-    site_name = 'pastebin.com'
-    ps = PastieSite(site_name,
-                  yamlconfig['site'][site_name]['download-url'],
-                  yamlconfig['site'][site_name]['archive-url'],
-                  yamlconfig['site'][site_name]['archive-regex'])
-    if 'update-min' in yamlconfig['site'][site_name] and yamlconfig['site'][site_name]['update-min']:
-        ps.update_min = yamlconfig['site'][site_name]['update-min']
-    if 'update-max' in yamlconfig['site'][site_name] and yamlconfig['site'][site_name]['update-max']:
-        ps.update_max = yamlconfig['site'][site_name]['update-max']
-    if 'pastie-classname' in yamlconfig['site'][site_name] and yamlconfig['site'][site_name]['pastie-classname']:
-        ps.pastie_classname = yamlconfig['site'][site_name]['pastie-classname']
-
     # run the software
     main()

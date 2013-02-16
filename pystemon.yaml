@@ -14,7 +14,10 @@ email:
   alert: no             # Enable/disable email alerts
   from: alert@example.com
   to: alert@example.com
-  server: 127.0.0.1
+  server: 127.0.0.1     # Address of the server (hostname or IP)
+  port: 25              # Outgoing SMTP port: 25, 587, ...
+  username: ''          # (optional) Username for authentication. Leave blank for no authentication.
+  password: ''          # (optional) Password for authentication. Leave blank for no authentication.
   subject: '[pystemon] - {subject}'
 
 #####
@@ -25,6 +28,12 @@ search:
 #    search: ''         # The regular expression to search for
 #    count: ''          # (optional) How many hits should it have to be interesting?
 #    exclude: ''        # (optional) Do not alert if this regular expression matches
+#    regex-flags: ''    # (optional) Regular expression flags to give to the find function.
+#                       #            Default = re.IGNORECASE
+#                       #            Set to 0 to have no flags set
+#                       #            See http://docs.python.org/2/library/re.html#re.DEBUG for more info.
+#                       #            Warning: when setting this the default is overridden
+#                       #  example: 're.MULTILINE + re.DOTALL + re.IGNORECASE'
   - search: '[^a-zA-Z0-9]example\.com'
   - description: 'Download (non-porn)'
     search: 'download'
@@ -34,7 +43,7 @@ search:
 #####
 # Configuration section for the paste sites
 #
-threads: 3              # number of download threads per site
+threads: 1              # number of download threads per site
 site:
 #  example.com:
 #    archive-url:       # the url where the list of last pasties is present 
@@ -78,21 +87,21 @@ site:
     archive-regex: '<a href="(\d+)" title="View this Paste'
     download-url: 'http://pastesite.com/plain/{id}.txt'
 
-  gist.github.com:
-    archive-url: 'https://gist.github.com/gists'
-    archive-regex: '<span><a href="/([0-9]+)">gist'
-    download-url: 'https://raw.github.com/gist/{id}'
+#  gist.github.com:
+#    archive-url: 'https://gist.github.com/gists'
+#    archive-regex: '<span><a href="/([0-9]+)">gist'
+#    download-url: 'https://raw.github.com/gist/{id}'
     
   codepad.org:
     archive-url: 'http://codepad.org/recent'
     archive-regex: '<a href="http://codepad.org/([a-zA-Z0-9]+)">view'
     download-url: 'http://codepad.org/{id}/raw.txt'
     
-  cdv.lt:  # FIXME write custom class to extract data from textarea
+  cdv.lt:
     pastie-classname: PastieCdvLt
     archive-url: 'http://cdv.lt/snippets'
-    archive-regex: '<a href="/cv/([a-zA-Z0-9]+)">'
-    download-url: 'http://cdv.lt/getData?sn={id}&callback=json1'
+    archive-regex: '<a href="/([a-zA-Z0-9]+)">[0-9]'
+    download-url: 'http://cdv.lt/api/snippet/{id}'
 
   snipt.net:
     pastie-classname: PastieSniptNet
